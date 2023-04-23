@@ -13,6 +13,7 @@ LEVELS = 15
 
 def main():
     img = cv2.imread(TEMPLATE_IMAGE, cv2.IMREAD_GRAYSCALE)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     for i, grayval in enumerate(np.linspace(0, 255, LEVELS, dtype=np.uint8)):
         img_new = img.copy()
         img_new[img_new == 0] = grayval
@@ -26,7 +27,6 @@ def main():
             thickness=20,
         )
         cv2.imwrite(f"{OUTPUT_DIR}{i:02d}.png", img_new)
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 if __name__ == "__main__":

@@ -13,8 +13,20 @@ Then, activate your virtual environment, in which you should install `numpy`, `m
 
 ```c++
 #if defined(_MSC_VER)
-#include <BaseTsd.h>
-typedef SSIZE_T ssize_t;
+    #include <BaseTsd.h>
+    typedef SSIZE_T ssize_t;
+#endif
+```
+
+or if that doesn't work, try:
+
+```c++
+#if !defined(ssize_t) && !defined(__MINGW32__)
+    #if defined(_WIN64)
+        typedef __int64 ssize_t; 
+    #else
+        typedef long ssize_t;
+    #endif
 #endif
 ```
 
