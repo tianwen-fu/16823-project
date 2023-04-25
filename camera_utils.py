@@ -1,7 +1,10 @@
+import abc
 import argparse
+import os
 import queue
 import sys
-import threading
+from contextlib import contextmanager
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -9,6 +12,18 @@ import numpy as np
 from roypy import roypy
 from roypy.roypy_platform_utils import PlatformHelper
 from roypy.roypy_sample_utils import CameraOpener, add_camera_opener_options
+
+if os.name == "nt":
+    import pythoncom
+
+
+@contextmanager
+def windows_helper():
+    if os.name == "nt":
+        pythoncom.CoInitialize()
+    yield
+    if os.name == "nt":
+        pythoncom.CoUninitialize()
 
 
 def print_camera_info(cam, id=None):
@@ -78,155 +93,85 @@ def convert_lens_params(lens_params):
     return cameraMatrix, distortionCoefficients
 
 
+@dataclass
+class DepthData:
+    width: int
+    height: int
+    coords: np.ndarray
+    noise: np.ndarray
+    grayscale: np.ndarray
+    confidence: np.ndarray
+
+
 class DataListener(roypy.IDepthDataListener):
     def __init__(self, q):
-        super(DataListener, self).__init__()
-        self.frame = 0
-        self.done = False
-        self.undistortImage = False
-        self.lock = threading.Lock()
-        self.once = False
+        super().__init__()
         self.queue = q
 
     def onNewData(self, data):
-        p = data.npoints()
-        # file:///C:/Users/kevin/projects/royale-lib/doc/html/a00965.html#abfc275fb52656acdce57b5d04e251e2d
-        self.queue.put(p)
-
-    def paint(self, data):
-        """Called in the main thread, with data containing one of the items that was added to the
-        queue in onNewData.
-        """
-        # mutex to lock out changes to the distortion while drawing
-        self.lock.acquire()
-
-        depth = data[:, :, 2]
-        gray = data[:, :, 4]
-        confidence = data[:, :, 5]
-
-        zImage = np.zeros(depth.shape, np.float32)
-        grayImage = np.zeros(depth.shape, np.float32)
-
-        # iterate over matrix, set zImage values to z values of data
-        # also set grayImage adjusted gray values
-        xVal = 0
-        yVal = 0
-        for x in zImage:
-            for y in x:
-                if confidence[xVal][yVal] > 0:
-                    zImage[xVal, yVal] = self.adjustZValue(depth[xVal][yVal])
-                    grayImage[xVal, yVal] = self.adjustGrayValue(gray[xVal][yVal])
-                yVal = yVal + 1
-            yVal = 0
-            xVal = xVal + 1
-
-        zImage8 = np.uint8(zImage)
-        grayImage8 = np.uint8(grayImage)
-
-        # apply undistortion
-        if self.undistortImage:
-            zImage8 = cv2.undistort(
-                zImage8, self.cameraMatrix, self.distortionCoefficients
-            )
-            grayImage8 = cv2.undistort(
-                grayImage8, self.cameraMatrix, self.distortionCoefficients
-            )
-
-        # finally show the images
-        cv2.imshow("Depth", zImage8)
-        cv2.imshow("Gray", grayImage8)
-
-        self.lock.release()
-        self.done = True
-
-    def toggleUndistort(self):
-        self.lock.acquire()
-        self.undistortImage = not self.undistortImage
-        self.lock.release()
-
-    # Map the depth values from the camera to 0..255
-    def adjustZValue(self, zValue):
-        clampedDist = min(2.5, zValue)
-        newZValue = clampedDist / 2.5 * 255
-        return newZValue
-
-    # Map the gray values from the camera to 0..255
-    def adjustGrayValue(self, grayValue):
-        clampedVal = min(600, grayValue)
-        newGrayValue = clampedVal / 600 * 255
-        return newGrayValue
-
-    def setLensParameters(self, lensParameters):
-        self.cameraMatrix, self.distortionCoefficients = convert_lens_params(
-            lensParameters
+        points = data.npoints()
+        wrapped_data = DepthData(
+            width=data.width,
+            height=data.height,
+            coords=np.stack([points[..., 0], points[..., 1], points[..., 2]], axis=-1),
+            noise=points[..., 3],
+            grayscale=points[..., 4],
+            confidence=points[..., 5],
         )
+        self.queue.put(wrapped_data)
 
 
-def main():
-    # Set the available arguments
-    platformhelper = PlatformHelper()
-    parser = argparse.ArgumentParser(usage=__doc__)
-    add_camera_opener_options(parser)
-    options = parser.parse_args()
+class EventLoopHandler(metaclass=abc.ABCMeta):
+    def __init__(self, timeout: float):
+        self.timeout = timeout
 
-    opener = CameraOpener(options)
+    @abc.abstractmethod
+    def _process_data(self, data: DepthData) -> bool:
+        pass
 
-    try:
-        cam = opener.open_camera()
-    except:
-        print("could not open Camera Interface")
-        sys.exit(1)
-
-    cam.setUseCase("MODE_5_45FPS_500")
-    print_camera_info(cam)
-
-    try:
-        # retrieve the interface that is available for recordings
-        replay = cam.asReplay()
-        print("Using a recording")
-        print("Framecount : ", replay.frameCount())
-        print("File version : ", replay.getFileVersion())
-    except SystemError:
-        print("Using a live camera")
-
-    q = queue.Queue()
-    l = DataListener(q)
-    cam.registerDataListener(l)
-    cam.startCapture()
-
-    lensP = cam.getLensParameters()
-    l.setLensParameters(lensP)
-
-    process_event_queue(q, l)
-
-    cam.stopCapture()
-    print("Done")
-
-
-def process_event_queue(q, painter):
-    while True:
+    def event_loop(self, q: queue.Queue) -> bool:
         try:
-            # try to retrieve an item from the queue.
-            # this will block until an item can be retrieved
-            # or the timeout of 1 second is hit
             if len(q.queue) == 0:
                 item = q.get(True, 1)
             else:
                 for i in range(0, len(q.queue)):
                     item = q.get(True, 1)
+            return self._process_data(item)
         except queue.Empty:
-            # this will be thrown when the timeout is hit
-            break
-        else:
-            painter.paint(item)
-            # waitKey is required to use imshow, we wait for 1 millisecond
-            currentKey = cv2.waitKey(1)
-            if currentKey == ord("d"):
-                painter.toggleUndistort()
-            # close if escape key pressed
-            if currentKey == 27:
-                break
+            return False
 
 
-if __name__ == "__main__":
-    main()
+@contextmanager
+def capturing_camera():
+    with windows_helper():
+        parser = argparse.ArgumentParser()
+        add_camera_opener_options(parser)
+        options = parser.parse_args()
+        opener = CameraOpener(options)
+
+        try:
+            cam = opener.open_camera()
+        except:
+            print("could not open Camera Interface")
+            sys.exit(1)
+
+        cam.setUseCase("MODE_5_45FPS_500")
+        print_camera_info(cam)
+
+        try:
+            # retrieve the interface that is available for recordings
+            replay = cam.asReplay()
+            print("Using a recording")
+            print("Framecount : ", replay.frameCount())
+            print("File version : ", replay.getFileVersion())
+        except SystemError:
+            print("Using a live camera")
+
+        data_queue = queue.Queue()
+        listener = DataListener(data_queue)
+        cam.registerDataListener(listener)
+        cam.startCapture()
+
+        yield cam, data_queue
+
+        cam.stopCapture()
