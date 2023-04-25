@@ -124,9 +124,13 @@ class DataListener(roypy.IDepthDataListener):
         grayImage8 = np.uint8(grayImage)
 
         # apply undistortion
-        # if self.undistortImage:
-        #     zImage8 = cv2.undistort(zImage8,self.cameraMatrix,self.distortionCoefficients)
-        #     grayImage8 = cv2.undistort(grayImage8,self.cameraMatrix,self.distortionCoefficients)
+        if self.undistortImage:
+            zImage8 = cv2.undistort(
+                zImage8, self.cameraMatrix, self.distortionCoefficients
+            )
+            grayImage8 = cv2.undistort(
+                grayImage8, self.cameraMatrix, self.distortionCoefficients
+            )
 
         # finally show the images
         cv2.imshow("Depth", zImage8)
