@@ -154,8 +154,7 @@ def main():
     listener = DataListener(data_queue)
     cam.registerDataListener(listener)
     cam.startCapture()
-    listener.setLensParameters(cam.getLensParameters())
-    handler = EventLoopHandler(listener, 1)
+    handler = OpenCVPlayback(cam.getLensParameters(), 1)
 
     while handler.event_loop(data_queue):
         pass
@@ -169,14 +168,17 @@ class EventLoopHandler(metaclass=abc.ABCMeta):
         self.timeout = timeout
 
     @abc.abstractmethod
-    def _process_data(self, data: DepthData):
+    def _process_data(self, data: DepthData) -> bool:
         pass
 
     def event_loop(self, q: queue.Queue) -> bool:
         try:
-            data = q.get(block=True, timeout=1)
-            self._process_data(data)
-            return True
+            if len(q.queue) == 0:
+                item = q.get(True, 1)
+            else:
+                for i in range(0, len(q.queue)):
+                    item = q.get(True, 1)
+            return self._process_data(item)
         except queue.Empty:
             return False
 
@@ -188,13 +190,45 @@ class OpenCVPlayback(EventLoopHandler):
             lens_params
         )
 
-    def _process_data(self, data: DepthData):
+    def _gray_map(self, gray_image: np.ndarray):
+        gray_image = gray_image.clip(400, 400 * 255)
+        return np.asarray(
+            (gray_image.astype(np.float32) - 400) / 400 * 255, dtype=np.uint8
+        )
+
+    def _process_data(self, data: DepthData) -> bool:
         gray_16u = np.asarray(data.grayscale, dtype=np.uint16)
+        gray_16u = cv2.undistort(
+            data.grayscale, self.camera_matrix, self.distortion_coefficients
+        )
+        gray_mapped = self._gray_map(gray_16u)
+
         # depth max = 1m; so we times it by 255
-        depth_8u = np.asarray(data * 255, dtype=np.uint8)
+        depth_8u = np.asarray(data.coords[..., 2] * 255, dtype=np.uint8)
         depth_color = cv2.applyColorMap(depth_8u, cv2.COLORMAP_WINTER)
-        cv2.imshow("Gray", gray_16u)
+        found, corners = cv2.findChessboardCorners(gray_mapped, (5, 5))
+        if found:
+            print("found corners")
+            cv2.drawChessboardCorners(gray_mapped, (5, 5), corners, found)
+        depth_color = cv2.undistort(
+            depth_color, self.camera_matrix, self.distortion_coefficients
+        )
+        cv2.imshow("Gray", gray_mapped)
+        cv2.setWindowTitle(
+            "Gray",
+            f"Gray {gray_16u.shape[1]}x{gray_16u.shape[0]}, min={gray_16u.min()}, max={gray_16u.max()}",
+        )
         cv2.imshow("Depth", depth_color)
+
+        key = cv2.waitKey(20)
+        if key == -1:
+            return True
+        elif chr(key) == "c":
+            print("collected a frame")
+            return True
+        else:
+            cv2.destroyAllWindows()
+            return False
 
         # apply undistortion
         # if self.undistortImage:
