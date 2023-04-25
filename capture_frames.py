@@ -1,6 +1,7 @@
 import abc
 import argparse
 import os
+import pickle
 import queue
 import sys
 from contextlib import contextmanager
@@ -159,6 +160,8 @@ def main():
     while handler.event_loop(data_queue):
         pass
 
+    with open("out.pkl", "wb") as f:
+        pickle.dump(handler.captured_frames, f)
     cam.stopCapture()
     print("Done")
 
@@ -189,12 +192,18 @@ class OpenCVPlayback(EventLoopHandler):
         self.camera_matrix, self.distortion_coefficients = convert_lens_params(
             lens_params
         )
+        self.captured_frames = []
 
     def _gray_map(self, gray_image: np.ndarray):
-        gray_image = gray_image.clip(400, 400 * 255)
-        return np.asarray(
-            (gray_image.astype(np.float32) - 400) / 400 * 255, dtype=np.uint8
+        # region calibrate at each environment
+        gray_scale_low = 50
+        gray_scale_high = 600
+        # endregion
+        gray_image = gray_image.astype(np.float32).clip(gray_scale_low, gray_scale_high)
+        gray_image = (
+            (gray_image - gray_scale_low) / (gray_scale_high - gray_scale_low) * 255
         )
+        return np.asarray(gray_image, dtype=np.uint8)
 
     def _process_data(self, data: DepthData) -> bool:
         gray_16u = np.asarray(data.grayscale, dtype=np.uint16)
@@ -202,29 +211,38 @@ class OpenCVPlayback(EventLoopHandler):
             data.grayscale, self.camera_matrix, self.distortion_coefficients
         )
         gray_mapped = self._gray_map(gray_16u)
+        # make it a three-channel image for drawing corners
+        gray_mapped = cv2.cvtColor(gray_mapped, cv2.COLOR_GRAY2BGR)
+        # do some upscaling, just to make everything easier to see
+        gray_mapped = cv2.resize(
+            gray_mapped, None, fx=5, fy=5, interpolation=cv2.INTER_NEAREST
+        )
 
         # depth max = 1m; so we times it by 255
         depth_8u = np.asarray(data.coords[..., 2] * 255, dtype=np.uint8)
         depth_color = cv2.applyColorMap(depth_8u, cv2.COLORMAP_WINTER)
-        found, corners = cv2.findChessboardCorners(gray_mapped, (5, 5))
+        found, corners = cv2.findChessboardCorners(gray_mapped, (14, 9))
+        title_appendix = ""
         if found:
-            print("found corners")
-            cv2.drawChessboardCorners(gray_mapped, (5, 5), corners, found)
+            cv2.drawChessboardCorners(gray_mapped, (14, 9), corners, found)
+            title_appendix += " (found)"
         depth_color = cv2.undistort(
             depth_color, self.camera_matrix, self.distortion_coefficients
         )
         cv2.imshow("Gray", gray_mapped)
         cv2.setWindowTitle(
             "Gray",
-            f"Gray {gray_16u.shape[1]}x{gray_16u.shape[0]}, min={gray_16u.min()}, max={gray_16u.max()}",
+            f"Gray {gray_16u.shape[1]}x{gray_16u.shape[0]}, min={gray_16u.min()}, max={gray_16u.max()} {title_appendix}",
         )
         cv2.imshow("Depth", depth_color)
 
         key = cv2.waitKey(20)
         if key == -1:
             return True
-        elif chr(key) == "c":
+        elif (chr(key) == "c" and found) or chr(key) == "f":
+            # c: capture, f: force capture
             print("collected a frame")
+            self.captured_frames.append(data)
             return True
         else:
             cv2.destroyAllWindows()
