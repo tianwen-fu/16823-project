@@ -1,4 +1,5 @@
 import pickle
+from argparse import ArgumentParser
 
 import cv2
 import numpy as np
@@ -20,8 +21,8 @@ class OpenCVPlayback(EventLoopHandler):
         self.captured_frames = []
 
         # region calibrate under each lighting condition, see get_gray_mapping_params.py
-        self._gray_scale_low = 71
-        self._gray_scale_high = 1200
+        self._gray_scale_low = 50
+        self._gray_scale_high = 1000
         # endregion
 
     @property
@@ -43,10 +44,6 @@ class OpenCVPlayback(EventLoopHandler):
         gray_mapped = self._gray_map(gray_16u)
         # make it a three-channel image for drawing corners
         gray_mapped = cv2.cvtColor(gray_mapped, cv2.COLOR_GRAY2BGR)
-        # do some upscaling, just to make everything easier to see
-        gray_mapped = cv2.resize(
-            gray_mapped, None, fx=5, fy=5, interpolation=cv2.INTER_NEAREST
-        )
 
         # depth max = 1m; so we times it by 255
         depth_8u = np.asarray(data.coords[..., 2] * 255, dtype=np.uint8)
@@ -56,6 +53,10 @@ class OpenCVPlayback(EventLoopHandler):
         if found:
             cv2.drawChessboardCorners(gray_mapped, (14, 9), corners, found)
             title_appendix += " (found)"
+        # do some upscaling, just to make everything easier to see
+        gray_mapped = cv2.resize(
+            gray_mapped, None, fx=3, fy=3, interpolation=cv2.INTER_NEAREST
+        )
         depth_color = cv2.undistort(
             depth_color, self.camera_matrix, self.distortion_coefficients
         )
@@ -69,10 +70,11 @@ class OpenCVPlayback(EventLoopHandler):
         key = cv2.waitKey(20)
         if key == -1:
             return True
-        elif (chr(key) == "c" and found) or chr(key) == "f":
+        elif chr(key) == "c" or chr(key) == "f":
             # c: capture, f: force capture
-            print("collected a frame")
-            self.captured_frames.append(data)
+            if found or chr(key) == "f":
+                print(f"[{len(self.captured_frames)}] collected a frame")
+                self.captured_frames.append(data)
             return True
         else:
             cv2.destroyAllWindows()
@@ -81,10 +83,11 @@ class OpenCVPlayback(EventLoopHandler):
 
 def main():
     with capturing_camera() as (cam, data_queue):
+        save_path = input("Save path: ")
         handler = OpenCVPlayback(cam.getLensParameters(), 5)
         while handler.event_loop(data_queue):
             pass
-        with open("out.pkl", "wb") as f:
+        with open(save_path, "wb") as f:
             pickle.dump(
                 dict(
                     frames=handler.captured_frames,
