@@ -81,7 +81,7 @@ class OpenCVPlayback(EventLoopHandler):
 
 def main():
     with capturing_camera() as (cam, data_queue):
-        handler = OpenCVPlayback(cam.getLensParameters(), 1)
+        handler = OpenCVPlayback(cam.getLensParameters(), 5)
         while handler.event_loop(data_queue):
             pass
         with open("out.pkl", "wb") as f:
@@ -89,6 +89,8 @@ def main():
                 dict(
                     frames=handler.captured_frames,
                     gray_mapping=handler.gray_mapping_params,
+                    camera_matrix=handler.camera_matrix,
+                    distortion_coefficients=handler.distortion_coefficients,
                 ),
                 f,
             )
