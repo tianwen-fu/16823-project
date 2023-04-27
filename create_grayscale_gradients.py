@@ -8,13 +8,13 @@ TEMPLATE_IMAGE = (
 )
 
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__)) + "/output/"
-LEVELS = 15
+STEP = 16
 
 
 def main():
     img = cv2.imread(TEMPLATE_IMAGE, cv2.IMREAD_GRAYSCALE)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    for i, grayval in enumerate(np.linspace(0, 255, LEVELS, dtype=np.uint8)):
+    for i, grayval in enumerate(np.arange(0, 255, STEP)):
         img_new = img.copy()
         img_new[img_new == 0] = grayval
         cv2.putText(

@@ -1,6 +1,7 @@
 import os
 import pickle
 from argparse import ArgumentParser
+from copy import deepcopy
 
 import cv2
 import matplotlib.pyplot as plt
@@ -81,7 +82,12 @@ def get_object_points(dims, size):
     return object_points
 
 
-def get_perblock_estimates(world_pts, confidence, checkerboard_dim, block_size):
+def get_perblock_estimates(
+    world_pts, color_image, confidence, checkerboard_dim, block_size
+):
+    assert (
+        world_pts.shape[:2] == color_image.shape[:2]
+    ), f"{world_pts.shape} {color_image.shape}"
     estimates = []
     nx, ny = checkerboard_dim
     xs = np.arange(nx) * block_size
@@ -89,17 +95,16 @@ def get_perblock_estimates(world_pts, confidence, checkerboard_dim, block_size):
     for x_min, x_max in zip(xs, xs[1:]):
         row_estimates = []
         for y_min, y_max in zip(ys, ys[1:]):
-            row_estimates.append(
-                world_pts[
-                    (confidence > 0)
-                    & (world_pts[..., 0] > x_min)
-                    & (world_pts[..., 0] < x_max)
-                    & (world_pts[..., 1] > y_min)
-                    & (world_pts[..., 1] < y_max)
-                    & (world_pts[..., 2] > -10)  # some regularity conditions
-                    & (world_pts[..., 2] < 10)
-                ]
+            block_mask = (
+                (confidence > 0)
+                & (world_pts[..., 0] > x_min)
+                & (world_pts[..., 0] < x_max)
+                & (world_pts[..., 1] > y_min)
+                & (world_pts[..., 1] < y_max)
+                & (world_pts[..., 2] > -10)  # some regularity conditions
+                & (world_pts[..., 2] < 10)
             )
+            row_estimates.append((world_pts[block_mask], color_image[block_mask]))
             # print(x_min, x_max, y_min, y_max, row_estimates[-1].shape)
         estimates.append(row_estimates)
     return estimates
@@ -108,6 +113,8 @@ def get_perblock_estimates(world_pts, confidence, checkerboard_dim, block_size):
 def collect_black_and_white_z(estimates, points_per_block):
     black_z = np.array([], dtype=np.float32)
     white_z = np.array([], dtype=np.float32)
+    COLOR_THRESHOLD = 128
+    ACCEPTING_RATIO = 0.6
     is_black_array = (
         []
     )  # return this array for visualization (and more importantly, bug detection)
@@ -115,7 +122,20 @@ def collect_black_and_white_z(estimates, points_per_block):
     for row in estimates:
         is_black_row = []
         for block in row:
-            block_z = block[..., 2]
+            block_coords, block_colors = block
+
+            # verify color masks
+            block_black_mask = block_colors[:, 0] < COLOR_THRESHOLD  # (N,)
+            block_black_sum = block_black_mask.sum()
+
+            if is_black:
+                block_z = block_coords[block_black_mask, 2]
+            else:
+                block_z = block_coords[~block_black_mask, 2]
+
+            assert (
+                block_z.shape[0] > ACCEPTING_RATIO * block_coords.shape[0]
+            ), "Not enough points in block have correct color"
             block_z = np.random.choice(block_z, points_per_block)
             if is_black:
                 black_z = np.concatenate([black_z, block_z])
@@ -183,10 +203,10 @@ def process_frame(frame: DepthData, prefix, metadata):
     world_pcd = o3d.geometry.PointCloud(
         o3d.utility.Vector3dVector(points_world.reshape(-1, 3))
     )
-    world_pcd.colors = pcd.colors
+    world_pcd.colors = deepcopy(pcd.colors)
     o3d.io.write_point_cloud(f"{prefix}_world.ply", world_pcd)
     perblock_estimates = get_perblock_estimates(
-        points_world, frame.confidence, dims, size
+        points_world, gray_image, frame.confidence, dims, size
     )
     black_z, white_z, is_black = plot_depth_histograms(perblock_estimates, dims, prefix)
     return errors, perblock_estimates, black_z, white_z, is_black
