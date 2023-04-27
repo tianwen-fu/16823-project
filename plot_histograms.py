@@ -1,7 +1,9 @@
 import os
 import pickle
 from argparse import ArgumentParser
+from contextlib import contextmanager
 from copy import deepcopy
+from functools import partial
 
 import cv2
 import matplotlib.pyplot as plt
@@ -224,41 +226,70 @@ def process_frame(frame: DepthData, gray_mapping, prefix, metadata):
     )
 
 
-def generate_frame_stats_distribution(frame_stats, work_dir):
-    fig = plt.figure(figsize=(4, 3), dpi=600)
-    # compare the probability curves
-    for idx, frame in enumerate(frame_stats):
-        if frame["errors"] > 10:
-            continue
-        # plt.hist(frame['black_z'], bins=10, histtype='step', range=(-10, 10))
-        kde = KernelDensity(kernel="gaussian", bandwidth=1.0).fit(
-            (frame["black_z"] - frame["white_z"].mean()).reshape(-1, 1)
-        )
-        log_prob = kde.score_samples(np.linspace(-10, 10, 1000).reshape(-1, 1))
-        if "different_depth" in work_dir:
-            label = f'{frame["depth"]}'
-        else:
-            label = f"{idx // 2}_{idx % 2}"
-        plt.plot(np.linspace(-10, 10, 1000), np.exp(log_prob), label=label)
-    if "different_depth" in work_dir:
-        plt.legend()  # otherwise there are too many labels
-    plt.savefig(os.path.join(work_dir, "black_z_distribution.pdf"))
-    plt.close(fig)
-    # also plot an overall plot of shifted z
-    fig = plt.figure(figsize=(4, 3), dpi=600)
-    # collect shifted z's
-    shifted_z = np.array([], dtype=frame_stats[0]["black_z"].dtype)
-    for frame in frame_stats:
-        this_shifted_z = frame["black_z"] - frame["white_z"].mean()
-        shifted_z = np.concatenate([shifted_z, this_shifted_z])
-    plt.hist(
-        shifted_z,
-        bins=100,
-        weights=np.ones_like(shifted_z) / len(shifted_z),
+@contextmanager
+def plot_and_save(name, work_dir, figsize=(4, 3), dpi=600, **fig_kwargs):
+    fig = plt.figure(figsize=figsize, dpi=dpi, **fig_kwargs)
+    data = {}
+
+    def _record_data(k, v):
+        data[k] = v
+
+    yield _record_data
+    plt.savefig(
+        os.path.join(work_dir, f"{name}.pdf"),
+        bbox_inches="tight",
+        dpi=dpi,
+        pad_inches=0,
     )
-    plt.ylabel("Frequency")
-    plt.savefig(os.path.join(work_dir, "overall_shifted_z.pdf"))
+    with open(os.path.join(work_dir, f"{name}.pkl"), "wb") as f:
+        pickle.dump(data, f)
     plt.close(fig)
+
+
+def generate_frame_stats_distribution(frame_stats, work_dir):
+    _plot_and_save = partial(plot_and_save, work_dir=work_dir)
+    xs = np.linspace(-10, 10, 1000)
+    with _plot_and_save("black_z_distribution") as record_data:
+        # compare the probability curves
+        for idx, frame in enumerate(frame_stats):
+            if frame["errors"] > 10:
+                continue
+            # plt.hist(frame['black_z'], bins=10, histtype='step', range=(-10, 10))
+            kde = KernelDensity(kernel="gaussian", bandwidth=1.0).fit(
+                (frame["black_z"] - frame["white_z"].mean()).reshape(-1, 1)
+            )
+            log_prob = kde.score_samples(xs.reshape(-1, 1))
+            probs = np.exp(log_prob)
+            if "different_depth" in work_dir:
+                label = f'{frame["depth"]:.0f}'
+                record_data(frame["depth"], probs)
+            else:
+                label = f"{idx // 2}_{idx % 2}"
+                record_data(idx, probs)
+            plt.plot(xs, probs, label=label)
+        plt.legend()
+    # also plot an overall plot of shifted z
+    with _plot_and_save("overall_shifted_z"):
+        # collect shifted z's
+        shifted_z = np.array([], dtype=frame_stats[0]["black_z"].dtype)
+        for frame in frame_stats:
+            this_shifted_z = frame["black_z"] - frame["white_z"].mean()
+            shifted_z = np.concatenate([shifted_z, this_shifted_z])
+        plt.hist(
+            shifted_z,
+            bins=100,
+            weights=np.ones_like(shifted_z) / len(shifted_z),
+        )
+        record_data("shifted_z", shifted_z)
+        plt.ylabel("Frequency")
+    with _plot_and_save("overall_shifted_z_kde"):
+        kde = KernelDensity(kernel="gaussian", bandwidth=1.0).fit(
+            shifted_z.reshape(-1, 1)
+        )
+        log_prob = kde.score_samples(xs.reshape(-1, 1))
+        probs = np.exp(log_prob)
+        record_data("shifted_z_probs", probs)
+        plt.plot(xs, probs)
 
 
 def main():
