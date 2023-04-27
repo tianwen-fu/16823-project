@@ -55,7 +55,9 @@ def estimate_extrinsics_by_procrustes(
     image_points[:, 1] = np.clip(image_points[:, 1], 0, point_cloud.shape[0] - 1)
     # camera_points = point_cloud[image_points[:, 1], image_points[:, 0]]
     camera_points = point_cloud[image_points[:, 1], image_points[:, 0], :]
-    assert camera_points.shape == object_points.shape
+    assert (
+        camera_points.shape == object_points.shape
+    ), f"{camera_points.shape} != {object_points.shape}"
     camera_centroid = np.mean(camera_points, axis=0)  # (3,)
     world_centroid = np.mean(object_points, axis=0)  # (3,)
     camera_centered = camera_points - camera_centroid.reshape(1, 3)
@@ -158,10 +160,9 @@ def plot_depth_histograms(perblock_estimates, dims, prefix):
     return black_z, white_z, is_black
 
 
-def process_frame(frame: DepthData, prefix, metadata):
-    dims = (15, 10)
-    size = 15
-    gray_mapping = metadata["gray_mapping"]
+def process_frame(frame: DepthData, gray_mapping, prefix, metadata):
+    dims = (7, 5)
+    size = 35.5
     camera_matrix = metadata["camera_matrix"]
     distortion_coefficients = metadata["distortion_coefficients"]
     gray_image, coords, pcd = preprocess_frame(
@@ -170,8 +171,9 @@ def process_frame(frame: DepthData, prefix, metadata):
     cv2.imwrite(f"{prefix}_gray.png", gray_image)
     o3d.io.write_point_cloud(f"{prefix}.ply", pcd)
     object_points = get_object_points(dims, size)
-    found, corners = cv2.findChessboardCorners(gray_image, (14, 9))
+    found, corners = cv2.findChessboardCorners(gray_image, (dims[0] - 1, dims[1] - 1))
     if not found:
+        print("Could not find pattern")
         plt.imshow(gray_image)
         plt.show()
         exit(1)
@@ -203,9 +205,13 @@ def main():
     with open(args.data_file, "rb") as f:
         data = pickle.load(f)
     frame_stats = []
-    for idx, frame in enumerate(data["frames"]):
+    for idx, (frame, gray_mapping) in enumerate(
+        zip(data["frames"], data["gray_mapping"])
+    ):
         frame_stats.append(
-            process_frame(frame, os.path.join(work_dir, f"{idx:03}"), data)
+            process_frame(
+                frame, gray_mapping, os.path.join(work_dir, f"{idx:03}"), data
+            )
         )
     errors, perblock_estimates, black_z, white_z, is_black = zip(*frame_stats)
     with open(os.path.join(work_dir, "stats.pkl"), "wb") as f:
