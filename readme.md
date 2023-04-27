@@ -2,7 +2,7 @@
 
 The binary files in `roypy/` are for Python 3.10 on Windows. If you want to build on your version of Python:
 
-First, install Visual Studio, CMake, and swig. Make sure they are in your PATH or install them with Scoop / winget:
+First, install Visual Studio, CMake, and swig. Make sure they are in your PATH or install them with `scoop` / `winget`:
 
 ```powershell
 winget install cmake
@@ -35,14 +35,24 @@ With the correct python path set, run
 ```powershell
 cmake -S .\swig -B .\_build -G "Visual Studio 16 2019" -Droyale_USE_NUMPY_IN_ROYPY=on
 ```
-You may also include `-T ClangCL` if you prefer. You may also see if other versions of Visual Studio work, and as far as I tested, VS2019 should work well with Python 3.10 and Python 3.11. 
+You may also include `-T ClangCL` if you prefer. You mays also see if other versions of Visual Studio work, and as far as I tested, VS2019 should work well with Python 3.10 and Python 3.11. 
 
-Build and copy the built files to your project path
+Build and copy the built files to your project path, amke sure there is a file called `_roypy.pyd`:
 ```powershell
 cmake --build .\_build\ --config Release
-cp .\_build\bin\* .\
+cp .\_build\bin\* .\roypy\
 ```
 you might be seeing some warnings, but it's OK to ignore them. Now you may try if everything works by
 ```powershell
 python .\sample_opencv.py
 ```
+
+## Some issues on Linux
+-    The binary file you need now is `_roypy.so`, and it may not be found in `_build/bin`; check if it is in `_build/`
+
+-   If you see some weird "QObject" and "QThread" errors, install `opencv` from source:
+    ```bash
+    sudo apt install libgtk2.0-dev pkg-config # this is necessary for imshow()
+    pip install --no-binary opencv-python opencv-python
+    ```
+    Run `pip cache purge` if necessary.

@@ -227,7 +227,7 @@ def process_frame(frame: DepthData, gray_mapping, prefix, metadata):
 
 
 @contextmanager
-def plot_and_save(name, work_dir, figsize=(4, 3), dpi=600, **fig_kwargs):
+def plot_and_save(name, work_dir, figsize=(4, 3), dpi=600, show=False, **fig_kwargs):
     fig = plt.figure(figsize=figsize, dpi=dpi, **fig_kwargs)
     data = {}
 
@@ -243,6 +243,8 @@ def plot_and_save(name, work_dir, figsize=(4, 3), dpi=600, **fig_kwargs):
     )
     with open(os.path.join(work_dir, f"{name}.pkl"), "wb") as f:
         pickle.dump(data, f)
+    if show:
+        plt.show()
     plt.close(fig)
 
 
@@ -254,22 +256,28 @@ def generate_frame_stats_distribution(frame_stats, work_dir):
         for idx, frame in enumerate(frame_stats):
             if frame["errors"] > 10:
                 continue
-            # plt.hist(frame['black_z'], bins=10, histtype='step', range=(-10, 10))
+            shifted_z = frame["black_z"] - frame["white_z"].mean()
             kde = KernelDensity(kernel="gaussian", bandwidth=1.0).fit(
-                (frame["black_z"] - frame["white_z"].mean()).reshape(-1, 1)
+                shifted_z.reshape(-1, 1)
             )
             log_prob = kde.score_samples(xs.reshape(-1, 1))
             probs = np.exp(log_prob)
+            stats_to_record = dict(
+                probs=probs,
+                raw=shifted_z,
+                mean=shifted_z.mean(),
+                std=shifted_z.std(),
+            )
             if "different_depth" in work_dir:
                 label = f'{frame["depth"]:.0f}'
-                record_data(frame["depth"], probs)
+                record_data(frame["depth"], stats_to_record)
             else:
                 label = f"{idx // 2}_{idx % 2}"
-                record_data(idx, probs)
+                record_data(idx, stats_to_record)
             plt.plot(xs, probs, label=label)
         plt.legend()
     # also plot an overall plot of shifted z
-    with _plot_and_save("overall_shifted_z"):
+    with _plot_and_save("overall_shifted_z") as record_data:
         # collect shifted z's
         shifted_z = np.array([], dtype=frame_stats[0]["black_z"].dtype)
         for frame in frame_stats:
@@ -282,7 +290,7 @@ def generate_frame_stats_distribution(frame_stats, work_dir):
         )
         record_data("shifted_z", shifted_z)
         plt.ylabel("Frequency")
-    with _plot_and_save("overall_shifted_z_kde"):
+    with _plot_and_save("overall_shifted_z_kde") as record_data:
         kde = KernelDensity(kernel="gaussian", bandwidth=1.0).fit(
             shifted_z.reshape(-1, 1)
         )
