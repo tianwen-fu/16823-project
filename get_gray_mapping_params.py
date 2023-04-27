@@ -40,7 +40,7 @@ def main():
         while handler.event_loop(data_queue):
             pass
         plt.hist(handler.hist_data, bins=100)
-        plt.show()
+        plt.savefig("gray_hist.png")
 
 
 if __name__ == "__main__":
