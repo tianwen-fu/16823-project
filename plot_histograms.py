@@ -20,6 +20,46 @@ def parse_args():
     return parser.parse_args()
 
 
+@contextmanager
+def plot_and_save(
+    name,
+    work_dir=None,
+    prefix=None,
+    figsize=(4, 2.5),
+    dpi=600,
+    show=False,
+    **fig_kwargs,
+):
+    if work_dir is not None and prefix is not None:
+        raise ValueError("Cannot specify both work_dir and prefix")
+    elif work_dir is not None:
+        _path = lambda name: os.path.join(work_dir, name)
+    elif prefix is not None:
+        _path = lambda name: f"{prefix}_{name}"
+    else:
+        raise ValueError("Must specify either work_dir or prefix")
+
+    fig = plt.figure(figsize=figsize, dpi=dpi, **fig_kwargs)
+    data = {}
+
+    def _record_data(k, v):
+        data[k] = v
+
+    yield _record_data
+    plt.savefig(
+        _path(f"{name}.pdf"),
+        bbox_inches="tight",
+        dpi=dpi,
+        pad_inches=0,
+    )
+    if data:
+        with open(_path(f"{name}.pkl"), "wb") as f:
+            pickle.dump(data, f)
+    if show:
+        plt.show()
+    plt.close(fig)
+
+
 def map_gray_image(gray_image, low, high, camera_matrix, distortion_coefficients):
     gray_image = gray_image.astype(np.float32).clip(low, high)
     gray_image = (gray_image - low) / (high - low) * 255
@@ -43,8 +83,9 @@ def preprocess_frame(
     gray_image = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2BGR)
     point_colors = gray_image.reshape(-1, 3)[confidence > 0, :]
     pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(coords_valid))
-    pcd.colors = o3d.utility.Vector3dVector(point_colors.astype(np.float32) / 255)
-    return gray_image, coords, pcd
+    point_colors = point_colors.astype(np.float32) / 255
+    pcd.colors = o3d.utility.Vector3dVector(point_colors.copy())
+    return gray_image, coords, pcd, point_colors
 
 
 def estimate_extrinsics_by_procrustes(
@@ -154,23 +195,48 @@ def collect_black_and_white_z(estimates, points_per_block):
     return black_z, white_z, is_black_array, skipped_blocks
 
 
+def estimate_posterior_eps(shifted_z, z_argmax):
+    # by document, pico flexx uses 850nm wavelength
+    freq = 1 / (850e-9)
+    phis = 4 * np.pi * shifted_z * freq / 3e8
+    estimated_albedo_ratio = 4 * np.pi * z_argmax * freq / 3e8
+    sine_values = 1 / estimated_albedo_ratio * np.sin(phis)
+    eps_minus_phis = np.arcsin(sine_values[(-1 < sine_values) & (sine_values < 1)])
+    return eps_minus_phis
+
+
 def plot_depth_histograms(perblock_estimates, dims, prefix):
+    _plot_and_save = partial(plot_and_save, prefix=prefix)
     black_z, white_z, is_black, skipped_blocks = collect_black_and_white_z(
         perblock_estimates, 200
     )
     print(f"{prefix}: Skipped {skipped_blocks} blocks due to not enough points")
-    fig = plt.figure(figsize=(4, 3), dpi=600)
-    plt.hist(black_z, bins=100, alpha=0.5, label="black", density=True)
-    plt.hist(white_z, bins=100, alpha=0.5, label="white", density=True)
-    plt.legend()
-    plt.savefig(f"{prefix}_overall.pdf")
-    plt.close(fig)
+    with _plot_and_save("overall"):
+        plt.hist(black_z, bins=100, alpha=0.5, label="black", density=True)
+        plt.hist(white_z, bins=100, alpha=0.5, label="white", density=True)
+        plt.legend()
     # also plot the shifted z
-    fig = plt.figure(figsize=(4, 3), dpi=600)
-    plt.hist(black_z - np.mean(white_z), bins=100, alpha=0.5, density=True)
-    plt.xlim(-10, 10)
-    plt.savefig(f"{prefix}_shifted_z.pdf")
-    plt.close(fig)
+    with _plot_and_save("shifted_z"):
+        shifted_z = black_z - np.mean(white_z)
+        plt.hist(shifted_z, bins=100, alpha=0.5, density=True)
+        plt.xlabel(r"$\hat{z} - z$")
+        plt.ylabel("Density")
+        plt.xlim(-10, 10)
+
+    # estimate albedo ratio
+    z_linspace = np.linspace(
+        np.percentile(shifted_z, 5), np.percentile(shifted_z, 95), 1000
+    )
+    kde = KernelDensity(kernel="gaussian", bandwidth=1.0).fit(shifted_z.reshape(-1, 1))
+    log_prob = kde.score_samples(z_linspace.reshape(-1, 1))
+    z_argmax = z_linspace[np.argmax(log_prob)]
+    eps_minus_phis = estimate_posterior_eps(shifted_z, z_argmax)
+    with _plot_and_save("posterior_eps_hist") as record_data:
+        plt.hist(eps_minus_phis, bins=100, density=True)
+        plt.xlabel(r"$\epsilon - \hat{\varphi}$")
+        plt.ylabel("Density")
+        record_data("eps_minus_phis", eps_minus_phis)
+
     nx, ny = dims
     fig, axs = plt.subplots(ny - 2, nx - 2, figsize=(nx - 1, ny - 1), dpi=600)
     for i, row in enumerate(axs):
@@ -179,12 +245,12 @@ def plot_depth_histograms(perblock_estimates, dims, prefix):
                 ax.set_facecolor("black")
             else:
                 ax.set_facecolor("white")
-            estimate, color_img = perblock_estimates[j][i]
+            estimate, image = perblock_estimates[j][i]
             ax.hist(estimate[..., 2], bins=100)
             ax.set_xlim(-10, 10)
-    plt.savefig(f"{prefix}_depth_histograms.pdf")
+    plt.savefig(f"{prefix}_depth_histograms.pdf", bbox_inches="tight", pad_inches=0)
     plt.close(fig)
-    return black_z, white_z, is_black
+    return black_z, white_z, is_black, eps_minus_phis
 
 
 def process_frame(frame: DepthData, gray_mapping, prefix, metadata):
@@ -192,7 +258,7 @@ def process_frame(frame: DepthData, gray_mapping, prefix, metadata):
     size = metadata["size"]
     camera_matrix = metadata["camera_matrix"]
     distortion_coefficients = metadata["distortion_coefficients"]
-    gray_image, coords, pcd = preprocess_frame(
+    gray_image, coords, pcd, point_colors = preprocess_frame(
         frame, gray_mapping, camera_matrix, distortion_coefficients
     )
     cv2.imwrite(f"{prefix}_gray.png", gray_image)
@@ -208,44 +274,25 @@ def process_frame(frame: DepthData, gray_mapping, prefix, metadata):
     print(f"Frame {prefix} errors: {errors}")
     points_world = coords @ rotation.T + translation.reshape(1, 3)
     world_pcd = o3d.geometry.PointCloud(
-        o3d.utility.Vector3dVector(points_world.reshape(-1, 3))
+        o3d.utility.Vector3dVector(points_world[frame.confidence > 0].reshape(-1, 3))
     )
-    world_pcd.colors = deepcopy(pcd.colors)
+    world_pcd.colors = o3d.utility.Vector3dVector(point_colors)
     o3d.io.write_point_cloud(f"{prefix}_world.ply", world_pcd)
     perblock_estimates = get_perblock_estimates(
         points_world, gray_image, frame.confidence, dims, size
     )
-    black_z, white_z, is_black = plot_depth_histograms(perblock_estimates, dims, prefix)
+    black_z, white_z, is_black, eps_minus_phis = plot_depth_histograms(
+        perblock_estimates, dims, prefix
+    )
     return (
         errors,
         perblock_estimates,
         black_z,
         white_z,
         is_black,
+        eps_minus_phis,
         translation.flatten()[2],
     )
-
-
-@contextmanager
-def plot_and_save(name, work_dir, figsize=(4, 3), dpi=600, show=False, **fig_kwargs):
-    fig = plt.figure(figsize=figsize, dpi=dpi, **fig_kwargs)
-    data = {}
-
-    def _record_data(k, v):
-        data[k] = v
-
-    yield _record_data
-    plt.savefig(
-        os.path.join(work_dir, f"{name}.pdf"),
-        bbox_inches="tight",
-        dpi=dpi,
-        pad_inches=0,
-    )
-    with open(os.path.join(work_dir, f"{name}.pkl"), "wb") as f:
-        pickle.dump(data, f)
-    if show:
-        plt.show()
-    plt.close(fig)
 
 
 def generate_frame_stats_distribution(frame_stats, work_dir):
@@ -299,6 +346,38 @@ def generate_frame_stats_distribution(frame_stats, work_dir):
         record_data("shifted_z_probs", probs)
         plt.plot(xs, probs)
 
+    # posterior
+    phis = np.linspace(-2, 2, 1000)
+    with _plot_and_save("eps_distribution") as record_data:
+        for idx, frame in enumerate(frame_stats):
+            if frame["errors"] > 10:
+                continue
+            kde = KernelDensity(kernel="gaussian", bandwidth=1.0).fit(
+                frame["eps_minus_phis"].reshape(-1, 1)
+            )
+            log_prob = kde.score_samples(phis.reshape(-1, 1))
+            probs = np.exp(log_prob)
+            stats_to_record = dict(probs=probs, raw=frame["eps_minus_phis"])
+            if "different_depth" in work_dir:
+                label = f'{frame["depth"]:.0f}'
+                record_data(frame["depth"], stats_to_record)
+            else:
+                label = f"{idx // 2}_{idx % 2}"
+                record_data(idx, stats_to_record)
+            plt.plot(phis, probs, label=label)
+    with _plot_and_save("overall_eps_distribution_kde") as record_data:
+        eps_minus_phis = np.array([], dtype=frame_stats[0]["eps_minus_phis"].dtype)
+        for frame in frame_stats:
+            this_eps_minus_phis = frame["eps_minus_phis"]
+            eps_minus_phis = np.concatenate([eps_minus_phis, this_eps_minus_phis])
+        kde = KernelDensity(kernel="gaussian", bandwidth=1.0).fit(
+            eps_minus_phis.reshape(-1, 1)
+        )
+        log_prob = kde.score_samples(phis.reshape(-1, 1))
+        probs = np.exp(log_prob)
+        record_data("eps_minus_phis_probs", probs)
+        plt.plot(phis, probs)
+
 
 def main():
     args = parse_args()
@@ -335,6 +414,7 @@ def main():
             black_z,
             white_z,
             is_black,
+            eps_minus_phis,
             depth,
         ) = process_frame(
             frame, gray_mapping, os.path.join(work_dir, f"{idx:03}"), data
@@ -346,6 +426,7 @@ def main():
                 black_z=black_z,
                 white_z=white_z,
                 is_black=is_black,
+                eps_minus_phis=eps_minus_phis,
                 depth=depth,
             )
         )
