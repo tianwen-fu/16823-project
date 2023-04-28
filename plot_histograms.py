@@ -52,6 +52,13 @@ def plot_and_save(
         dpi=dpi,
         pad_inches=0,
     )
+    # also save a png image, in case we want to use it in a presentation
+    plt.savefig(
+        _path(f"{name}.png"),
+        bbox_inches="tight",
+        dpi=dpi,
+        pad_inches=0,
+    )
     if data:
         with open(_path(f"{name}.pkl"), "wb") as f:
             pickle.dump(data, f)
@@ -201,7 +208,9 @@ def estimate_posterior_eps(shifted_z, z_argmax):
     phis = 4 * np.pi * shifted_z * freq / 3e8
     estimated_albedo_ratio = 4 * np.pi * z_argmax * freq / 3e8
     sine_values = 1 / estimated_albedo_ratio * np.sin(phis)
-    eps_minus_phis = np.arcsin(sine_values[(-1 < sine_values) & (sine_values < 1)])
+    valid_mask = (-1 < sine_values) & (sine_values < 1)
+    eps_minus_phis = np.arcsin(sine_values[valid_mask])  # this is eps minus phi_hat
+    eps_minus_phis -= phis[valid_mask]
     return eps_minus_phis
 
 
@@ -233,7 +242,7 @@ def plot_depth_histograms(perblock_estimates, dims, prefix):
     eps_minus_phis = estimate_posterior_eps(shifted_z, z_argmax)
     with _plot_and_save("posterior_eps_hist") as record_data:
         plt.hist(eps_minus_phis, bins=100, density=True)
-        plt.xlabel(r"$\epsilon - \hat{\varphi}$")
+        plt.xlabel(r"$\epsilon - \varphi$")
         plt.ylabel("Density")
         record_data("eps_minus_phis", eps_minus_phis)
 
@@ -249,6 +258,7 @@ def plot_depth_histograms(perblock_estimates, dims, prefix):
             ax.hist(estimate[..., 2], bins=100)
             ax.set_xlim(-10, 10)
     plt.savefig(f"{prefix}_depth_histograms.pdf", bbox_inches="tight", pad_inches=0)
+    plt.savefig(f"{prefix}_depth_histograms.png", bbox_inches="tight", pad_inches=0)
     plt.close(fig)
     return black_z, white_z, is_black, eps_minus_phis
 
