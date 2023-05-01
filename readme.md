@@ -1,3 +1,11 @@
+This is the repository of my project for the CMU course 16-823 *Physics-Based Methods in Vision*. The collected data and generated figures are available at [this link](https://drive.google.com/file/d/1chi1Gw11XjNTAYo_-_9eVgg3pd2Ult6o/view?usp=share_link).
+
+Some scripts included in this repo:
+- `capture_frames.py` provides the live feed of the camera. Collect the current frame by pressing `c`. 
+- `plot_histograms.py` contains all the code we used to generate figures in the report. 
+
+Some guides on compiling the Royale SDK (downloadable from the [official website of PMD](https://pmdtec.com/en/download-sdk/)):
+
 ## Installation on Windows
 
 The binary files in `roypy/` are for Python 3.10 on Windows. If you want to build on your version of Python:
@@ -40,7 +48,7 @@ You may also include `-T ClangCL` if you prefer. You mays also see if other vers
 Build and copy the built files to your project path, amke sure there is a file called `_roypy.pyd`:
 ```powershell
 cmake --build .\_build\ --config Release
-cp .\_build\bin\* .\roypy\
+cp .\_build\bin\* .\
 ```
 you might be seeing some warnings, but it's OK to ignore them. Now you may try if everything works by
 ```powershell
@@ -48,7 +56,7 @@ python .\sample_opencv.py
 ```
 
 ## Some issues on Linux
--    The binary file you need now is `_roypy.so`, and it may not be found in `_build/bin`; check if it is in `_build/`
+-    The binary file you need now is `_roypy.so`, and it may not be found in `_build/bin`; check if it is in `_build/`.
 
 -   If you see some weird "QObject" and "QThread" errors, install `opencv` from source:
     ```bash
